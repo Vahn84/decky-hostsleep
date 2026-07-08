@@ -20,6 +20,9 @@ DEFAULTS = {
     "wol_port": 9,
     "sleep_on_suspend": True,
     "wake_on_resume": True,
+    # Gate on an active Remote Play client session: only sleep the host if the
+    # Deck is streaming at suspend time, and only wake it if we slept it.
+    "only_when_streaming": True,
 }
 
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
@@ -38,6 +41,25 @@ def _magic_packet(mac_bytes):
     return b"\xff" * 6 + mac_bytes * 16
 
 
+def _is_streaming():
+    """True if Steam's Remote Play client process is running on the Deck.
+
+    /proc/<pid>/comm truncates to 15 chars, so read cmdline and match the
+    executable's basename against 'streaming_client'.
+    """
+    for pid in os.listdir("/proc"):
+        if not pid.isdigit():
+            continue
+        try:
+            with open(f"/proc/{pid}/cmdline", "rb") as f:
+                argv0 = f.read().split(b"\x00", 1)[0]
+        except OSError:
+            continue
+        if os.path.basename(argv0.decode(errors="replace")) == "streaming_client":
+            return True
+    return False
+
+
 def _send_udp(packet, targets):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -51,6 +73,9 @@ def _send_udp(packet, targets):
 class Plugin:
     async def _main(self):
         self.settings = dict(DEFAULTS)
+        # Set when we sleep the host on suspend; gates the wake on resume.
+        # In-memory only: the backend process survives Deck suspend.
+        self.slept_host = False
         try:
             with open(SETTINGS_PATH) as f:
                 stored = json.load(f)
@@ -78,16 +103,29 @@ class Plugin:
             json.dump(self.settings, f, indent=2)
         return self.settings
 
+    async def is_streaming(self):
+        return _is_streaming()
+
     # ---- suspend/resume hooks (respect the toggles) --------------------
 
     async def on_deck_suspend(self):
         if not self.settings["sleep_on_suspend"]:
             return {"ok": True, "skipped": True}
-        return await self.sleep_host()
+        if self.settings["only_when_streaming"]:
+            if not _is_streaming():
+                decky.logger.info("on_deck_suspend: no Remote Play session, skipping")
+                return {"ok": True, "skipped": True}
+        result = await self.sleep_host()
+        self.slept_host = result.get("ok", False)
+        return result
 
     async def on_deck_resume(self):
         if not self.settings["wake_on_resume"]:
             return {"ok": True, "skipped": True}
+        if self.settings["only_when_streaming"] and not self.slept_host:
+            decky.logger.info("on_deck_resume: host was not slept by us, skipping wake")
+            return {"ok": True, "skipped": True}
+        self.slept_host = False
         return await self.wake_host()
 
     # ---- actions (unconditional; also used by the Test buttons) --------

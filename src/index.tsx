@@ -20,6 +20,7 @@ interface Settings {
   wol_port: number;
   sleep_on_suspend: boolean;
   wake_on_resume: boolean;
+  only_when_streaming: boolean;
 }
 
 interface ActionResult {
@@ -34,12 +35,15 @@ const wakeHost = callable<[], ActionResult>("wake_host");
 const sleepHost = callable<[], ActionResult>("sleep_host");
 const onDeckSuspend = callable<[], ActionResult>("on_deck_suspend");
 const onDeckResume = callable<[], ActionResult>("on_deck_resume");
+const isStreaming = callable<[], boolean>("is_streaming");
 
 function Content() {
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [streaming, setStreaming] = useState<boolean | null>(null);
 
   useEffect(() => {
     getSettings().then(setSettings);
+    isStreaming().then(setStreaming);
   }, []);
 
   if (!settings) {
@@ -75,6 +79,17 @@ function Content() {
             label="Wake host when Deck resumes"
             checked={settings.wake_on_resume}
             onChange={(v) => update({ wake_on_resume: v })}
+          />
+        </PanelSectionRow>
+        <PanelSectionRow>
+          <ToggleField
+            label="Only when using Remote Play"
+            description={
+              "Sleep only if a Remote Play session is active; wake only if the host was slept by this plugin." +
+              (streaming === null ? "" : ` Remote Play now: ${streaming ? "active" : "none"}`)
+            }
+            checked={settings.only_when_streaming}
+            onChange={(v) => update({ only_when_streaming: v })}
           />
         </PanelSectionRow>
       </PanelSection>

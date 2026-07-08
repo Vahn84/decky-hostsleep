@@ -16,6 +16,11 @@ your session.
 | Suspend (power button / lid / idle) | Sends a sleep command to the host **before** Wi-Fi drops |
 | Resume | Sends a burst of 3 WOL magic packets to wake the host |
 
+With **"Only when using Remote Play"** enabled (default), the suspend action only fires
+if a Remote Play session is active (detected via Steam's `streaming_client` process),
+and the resume action only fires if the host was slept by this plugin — so suspending
+the Deck mid-local-game never touches your PC.
+
 The sleep command targets [sleep-on-lan](https://github.com/SR-G/sleep-on-lan)
 running on the host, in one of two modes (configurable in the plugin panel):
 
