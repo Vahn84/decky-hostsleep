@@ -29,13 +29,33 @@ running on the host, in one of two modes (configurable in the plugin panel):
 
 ## Host PC setup (Windows)
 
-1. Download [sleep-on-lan](https://github.com/SR-G/sleep-on-lan/releases) and set it
-   up to run at boot (it ships a `sol.exe --install-service` style setup; see its README).
+1. Download [sleep-on-lan](https://github.com/SR-G/sleep-on-lan/releases) (`sol.exe`).
    Default config listens on UDP 9 (reversed-MAC) and HTTP 8009 — both work as-is.
-2. Allow `sol.exe` through Windows Firewall (private network).
-3. Wake-on-LAN must already work (it does if MoonDeck wakes this PC): NIC power
+2. Run it at boot via Task Scheduler (its README suggests NSSM, which is abandoned —
+   don't bother). From an **elevated** PowerShell:
+
+   ```powershell
+   $exe = "C:\Tools\sleep-on-lan\sol.exe"
+   Register-ScheduledTask -TaskName "SleepOnLAN" `
+     -Action (New-ScheduledTaskAction -Execute $exe -WorkingDirectory (Split-Path $exe)) `
+     -Trigger (New-ScheduledTaskTrigger -AtStartup) `
+     -User "SYSTEM" -RunLevel Highest `
+     -Settings (New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `
+         -ExecutionTimeLimit 0 -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1))
+   Start-ScheduledTask -TaskName "SleepOnLAN"
+   ```
+3. Allow it through Windows Firewall (private network only — SYSTEM won't inherit any
+   rule you accepted interactively for your own user):
+
+   ```powershell
+   New-NetFirewallRule -DisplayName "SleepOnLAN HTTP" -Direction Inbound -Protocol TCP -LocalPort 8009 -Profile Private -Action Allow
+   New-NetFirewallRule -DisplayName "SleepOnLAN UDP" -Direction Inbound -Protocol UDP -LocalPort 9 -Profile Private -Action Allow
+   ```
+4. Verify `http://<pc-ip>:8009/` answers from the LAN, then once more after a
+   suspend/resume cycle.
+5. Wake-on-LAN must already work (it does if MoonDeck wakes this PC): NIC power
    management → "Only allow a magic packet to wake the computer", wired Ethernet recommended.
-4. Give the PC a static IP or DHCP reservation.
+6. Give the PC a static IP or DHCP reservation.
 
 ## Deck setup
 
