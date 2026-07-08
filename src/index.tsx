@@ -21,11 +21,13 @@ interface Settings {
   sleep_on_suspend: boolean;
   wake_on_resume: boolean;
   only_when_streaming: boolean;
+  debug: boolean;
 }
 
 interface ActionResult {
   ok: boolean;
   skipped?: boolean;
+  reason?: string;
   error?: string;
 }
 
@@ -36,13 +38,25 @@ const sleepHost = callable<[], ActionResult>("sleep_host");
 const onDeckSuspend = callable<[], ActionResult>("on_deck_suspend");
 const onDeckResume = callable<[], ActionResult>("on_deck_resume");
 const isStreaming = callable<[], boolean>("is_streaming");
+const getDebugLog = callable<[], string[]>("get_debug_log");
+const clearDebugLog = callable<[], string[]>("clear_debug_log");
+
+function describeResult(res: ActionResult): string {
+  if (!res.ok) return `failed: ${res.error}`;
+  if (res.skipped) return `skipped (${res.reason ?? "no reason"})`;
+  return "sent";
+}
 
 function Content() {
   const [settings, setSettings] = useState<Settings | null>(null);
   const [streaming, setStreaming] = useState<boolean | null>(null);
+  const [debugLog, setDebugLog] = useState<string[]>([]);
 
   useEffect(() => {
-    getSettings().then(setSettings);
+    getSettings().then((s) => {
+      setSettings(s);
+      if (s.debug) void getDebugLog().then(setDebugLog);
+    });
     isStreaming().then(setStreaming);
   }, []);
 
@@ -148,6 +162,51 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
       </PanelSection>
+
+      <PanelSection title="Debug">
+        <PanelSectionRow>
+          <ToggleField
+            label="Debug mode"
+            description="Show the event log below and toast every suspend/resume decision"
+            checked={settings.debug}
+            onChange={(v) => {
+              update({ debug: v });
+              if (v) void getDebugLog().then(setDebugLog);
+            }}
+          />
+        </PanelSectionRow>
+        {settings.debug && (
+          <>
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => void getDebugLog().then(setDebugLog)}>
+                Refresh log
+              </ButtonItem>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <ButtonItem layout="below" onClick={() => void clearDebugLog().then(setDebugLog)}>
+                Clear log
+              </ButtonItem>
+            </PanelSectionRow>
+            <PanelSectionRow>
+              <div
+                style={{
+                  fontSize: "11px",
+                  fontFamily: "monospace",
+                  whiteSpace: "pre-wrap",
+                  wordBreak: "break-all",
+                  userSelect: "text",
+                  maxHeight: "260px",
+                  overflowY: "auto",
+                }}
+              >
+                {debugLog.length === 0
+                  ? "(log is empty)"
+                  : [...debugLog].reverse().join("\n")}
+              </div>
+            </PanelSectionRow>
+          </>
+        )}
+      </PanelSection>
     </>
   );
 }
@@ -168,8 +227,11 @@ export default definePlugin(() => {
   const resumeReg = steamClient?.System?.RegisterForOnResumeFromSuspend?.(async () => {
     try {
       const res = await onDeckResume();
+      const settings = await getSettings();
       if (!res.ok) {
         toaster.toast({ title: "HostSleep", body: `Wake failed: ${res.error}` });
+      } else if (settings.debug) {
+        toaster.toast({ title: "HostSleep debug", body: `Wake ${describeResult(res)}` });
       }
     } catch (e) {
       console.error("HostSleep: resume hook error:", e);

@@ -3,7 +3,9 @@ import json
 import os
 import re
 import socket
+import time
 import urllib.request
+from collections import deque
 
 import decky
 
@@ -23,6 +25,8 @@ DEFAULTS = {
     # Gate on an active Remote Play client session: only sleep the host if the
     # Deck is streaming at suspend time, and only wake it if we slept it.
     "only_when_streaming": True,
+    # Show the event log in the plugin panel and toast debug info on resume
+    "debug": False,
 }
 
 MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
@@ -71,11 +75,18 @@ def _send_udp(packet, targets):
 
 
 class Plugin:
+    def _dbg(self, msg):
+        # Ring buffer surfaced in the panel's Debug section; always recorded
+        # (cheap), only displayed when the debug toggle is on.
+        self.debug_log.append(f"{time.strftime('%H:%M:%S')} {msg}")
+        decky.logger.info(msg)
+
     async def _main(self):
         self.settings = dict(DEFAULTS)
         # Set when we sleep the host on suspend; gates the wake on resume.
         # In-memory only: the backend process survives Deck suspend.
         self.slept_host = False
+        self.debug_log = deque(maxlen=100)
         try:
             with open(SETTINGS_PATH) as f:
                 stored = json.load(f)
@@ -84,9 +95,9 @@ class Plugin:
             pass
         except (json.JSONDecodeError, OSError) as e:
             decky.logger.error("Failed to load settings, using defaults: %s", e)
-        decky.logger.info("HostSleep loaded (host=%s mac=%s mode=%s)",
-                          self.settings["host_ip"], self.settings["mac"],
-                          self.settings["sleep_mode"])
+        self._dbg("plugin loaded (host=%s mac=%s mode=%s)" % (
+            self.settings["host_ip"], self.settings["mac"],
+            self.settings["sleep_mode"]))
 
     async def _unload(self):
         decky.logger.info("HostSleep unloaded")
@@ -106,25 +117,37 @@ class Plugin:
     async def is_streaming(self):
         return _is_streaming()
 
+    async def get_debug_log(self):
+        return list(self.debug_log)
+
+    async def clear_debug_log(self):
+        self.debug_log.clear()
+        return []
+
     # ---- suspend/resume hooks (respect the toggles) --------------------
 
     async def on_deck_suspend(self):
+        self._dbg("suspend hook fired")
         if not self.settings["sleep_on_suspend"]:
-            return {"ok": True, "skipped": True}
+            self._dbg("suspend: sleep_on_suspend is off, skipping")
+            return {"ok": True, "skipped": True, "reason": "disabled"}
         if self.settings["only_when_streaming"]:
-            if not _is_streaming():
-                decky.logger.info("on_deck_suspend: no Remote Play session, skipping")
-                return {"ok": True, "skipped": True}
+            streaming = _is_streaming()
+            self._dbg(f"suspend: Remote Play session {'active' if streaming else 'not found'}")
+            if not streaming:
+                return {"ok": True, "skipped": True, "reason": "not streaming"}
         result = await self.sleep_host()
         self.slept_host = result.get("ok", False)
         return result
 
     async def on_deck_resume(self):
+        self._dbg("resume hook fired")
         if not self.settings["wake_on_resume"]:
-            return {"ok": True, "skipped": True}
+            self._dbg("resume: wake_on_resume is off, skipping")
+            return {"ok": True, "skipped": True, "reason": "disabled"}
         if self.settings["only_when_streaming"] and not self.slept_host:
-            decky.logger.info("on_deck_resume: host was not slept by us, skipping wake")
-            return {"ok": True, "skipped": True}
+            self._dbg("resume: host was not slept by us, skipping wake")
+            return {"ok": True, "skipped": True, "reason": "host not slept by plugin"}
         self.slept_host = False
         return await self.wake_host()
 
@@ -134,7 +157,7 @@ class Plugin:
         try:
             packet = _magic_packet(_parse_mac(self.settings["mac"]))
         except ValueError as e:
-            decky.logger.error("wake_host: %s", e)
+            self._dbg(f"wake ERROR: {e}")
             return {"ok": False, "error": str(e)}
 
         port = int(self.settings["wol_port"] or 9)
@@ -150,10 +173,10 @@ class Plugin:
                 if i < 2:
                     await asyncio.sleep(0.3)
         except OSError as e:
-            decky.logger.error("wake_host: send failed: %s", e)
+            self._dbg(f"wake ERROR: send failed: {e}")
             return {"ok": False, "error": str(e)}
 
-        decky.logger.info("wake_host: sent WOL to %s", targets)
+        self._dbg(f"wake: sent WOL burst to {targets}")
         return {"ok": True}
 
     async def sleep_host(self):
@@ -176,17 +199,17 @@ class Plugin:
         try:
             status = await asyncio.to_thread(_get)
         except Exception as e:
-            decky.logger.error("sleep_host: %s -> %s", url, e)
+            self._dbg(f"sleep ERROR: {url} -> {e}")
             return {"ok": False, "error": str(e)}
 
-        decky.logger.info("sleep_host: %s -> HTTP %s", url, status)
+        self._dbg(f"sleep: {url} -> HTTP {status}")
         return {"ok": True}
 
     async def _sleep_udp(self):
         try:
             mac = _parse_mac(self.settings["mac"])
         except ValueError as e:
-            decky.logger.error("sleep_host: %s", e)
+            self._dbg(f"sleep ERROR: {e}")
             return {"ok": False, "error": str(e)}
 
         # sleep-on-lan convention: magic packet built from the REVERSED MAC
@@ -199,8 +222,8 @@ class Plugin:
             await asyncio.sleep(0.2)
             _send_udp(packet, [target])
         except OSError as e:
-            decky.logger.error("sleep_host: send failed: %s", e)
+            self._dbg(f"sleep ERROR: send failed: {e}")
             return {"ok": False, "error": str(e)}
 
-        decky.logger.info("sleep_host: sent reversed-MAC packet to %s", target)
+        self._dbg(f"sleep: sent reversed-MAC packet to {target}")
         return {"ok": True}
