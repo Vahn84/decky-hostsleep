@@ -1,0 +1,11 @@
+{
+  "name": "HostSleep",
+  "author": "Fabio Cingolani",
+  "flags": [],
+  "api_version": 1,
+  "publish": {
+    "tags": ["remote-play", "power", "wake-on-lan"],
+    "description": "Sleeps your host gaming PC when the Deck suspends and wakes it (WOL) when the Deck resumes — without killing the running game.",
+    "image": "https://opengraph.githubassets.com/1/SteamDeckHomebrew/PluginLoader"
+  }
+}
