@@ -26,10 +26,10 @@ running on the host, in one of two modes (configurable in the plugin panel):
 
 - **HTTP** (default): `GET http://<host>:8009/sleep`
 - **UDP**: a magic packet built from the *reversed* MAC address, sent as a
-  **broadcast**. Use this if your router isolates wireless from wired clients (e.g.
-  the **ZTE MC888** 5G CPE, which drops unicast between a wireless Deck and a wired
-  host but still floods broadcast across) — HTTP unicast won't reach the host there,
-  but the broadcast sleep and WOL wake both do.
+  **broadcast**. Use this if your router isolates wireless from wired clients — such
+  routers drop unicast between a wireless Deck and a wired host but still flood
+  broadcast across, so HTTP unicast won't reach the host but the broadcast sleep and
+  WOL wake both do.
 
 ## Host PC setup (Windows)
 

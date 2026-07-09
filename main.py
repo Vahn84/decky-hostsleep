@@ -213,11 +213,10 @@ class Plugin:
             return {"ok": False, "error": str(e)}
 
         # sleep-on-lan convention: magic packet built from the REVERSED MAC.
-        # Sent to the BROADCAST address (not the host's unicast IP): some routers
-        # — e.g. the ZTE MC888 5G CPE — isolate wireless from wired clients and
-        # drop unicast between them, but still flood layer-2 broadcast across, so
-        # broadcast is the only envelope that reliably reaches a wired host from a
-        # wireless Deck. This mirrors how WOL wake already works.
+        # Sent to the BROADCAST address (not the host's unicast IP): routers that
+        # isolate wireless from wired clients drop unicast between them but still
+        # flood layer-2 broadcast across, so broadcast reliably reaches a wired
+        # host from a wireless client. This mirrors how WOL wake already works.
         packet = _magic_packet(mac[::-1])
         port = int(self.settings["wol_port"] or 9)
         # sol listens on UDP 9 and 7 by default. Hit the global broadcast, the
