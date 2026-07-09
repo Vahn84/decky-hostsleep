@@ -29,6 +29,11 @@ interface ActionResult {
   skipped?: boolean;
   reason?: string;
   error?: string;
+  // Wake only: true = host heard announcing itself, false = silence for the
+  // whole window, null/undefined = no listener available (blind send).
+  confirmed?: boolean | null;
+  elapsed_s?: number;
+  attempts?: number;
 }
 
 const getSettings = callable<[], Settings>("get_settings");
@@ -44,6 +49,10 @@ const clearDebugLog = callable<[], string[]>("clear_debug_log");
 function describeResult(res: ActionResult): string {
   if (!res.ok) return `failed: ${res.error}`;
   if (res.skipped) return `skipped (${res.reason ?? "no reason"})`;
+  if (res.confirmed === true)
+    return `confirmed: host is awake (${res.elapsed_s}s, ${res.attempts} attempts)`;
+  if (res.confirmed === false)
+    return `sent, but no response from host after ${res.elapsed_s}s`;
   return "sent";
 }
 
@@ -76,6 +85,14 @@ function Content() {
       title: "HostSleep",
       body: res.ok ? `${label} command sent` : `${label} failed: ${res.error}`,
     });
+  };
+
+  // Wake retries until the host is heard (up to ~45s), so give immediate
+  // feedback at press and the real outcome when the loop settles.
+  const testWake = async () => {
+    toaster.toast({ title: "HostSleep", body: "Waking host — listening for it to come up…" });
+    const res = await wakeHost();
+    toaster.toast({ title: "HostSleep", body: `Wake ${describeResult(res)}` });
   };
 
   return (
@@ -157,7 +174,7 @@ function Content() {
           </ButtonItem>
         </PanelSectionRow>
         <PanelSectionRow>
-          <ButtonItem layout="below" onClick={() => void act("Wake", wakeHost)}>
+          <ButtonItem layout="below" onClick={() => void testWake()}>
             Wake host now
           </ButtonItem>
         </PanelSectionRow>
@@ -230,6 +247,9 @@ export default definePlugin(() => {
       const settings = await getSettings();
       if (!res.ok) {
         toaster.toast({ title: "HostSleep", body: `Wake failed: ${res.error}` });
+      } else if (res.confirmed === false) {
+        // Actionable even outside debug mode: the host never announced itself.
+        toaster.toast({ title: "HostSleep", body: `Wake ${describeResult(res)}` });
       } else if (settings.debug) {
         toaster.toast({ title: "HostSleep debug", body: `Wake ${describeResult(res)}` });
       }

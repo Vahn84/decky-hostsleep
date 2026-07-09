@@ -14,7 +14,7 @@ your session.
 | Deck event | Plugin action |
 |---|---|
 | Suspend (power button / lid / idle) | Sends a sleep command to the host **before** Wi-Fi drops |
-| Resume | Sends a burst of 8 WOL magic packets over ~5 s to wake the host |
+| Resume | Sends WOL packets and **listens for the host to announce itself** (gratuitous ARP/DHCP broadcast), retrying every 3 s for up to 45 s until confirmed awake — then reports the real outcome |
 
 With **"Only when using Remote Play"** enabled (default), the suspend action only fires
 if a Remote Play session is active (detected via Steam's `streaming_client` process),

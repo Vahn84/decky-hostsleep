@@ -33,6 +33,14 @@ MAC_RE = re.compile(r"^([0-9A-Fa-f]{2}[:-]){5}[0-9A-Fa-f]{2}$")
 # Only plain IPs/hostnames may be interpolated into the sleep URL
 HOST_RE = re.compile(r"^[A-Za-z0-9.\-]+$")
 
+# Wake is retry-until-acknowledged: broadcast delivery to a sleeping wired NIC
+# through a client-isolating router is stochastic (verified: identical packets
+# sometimes wake the host, sometimes vanish), so one volley is a coin flip.
+# Keep sending until the host is heard announcing itself, or the window closes.
+WAKE_WINDOW_S = 45
+WAKE_RETRY_S = 3.0
+ETH_P_ALL = 0x0003
+
 
 def _parse_mac(mac):
     mac = (mac or "").strip()
@@ -72,6 +80,45 @@ def _send_udp(packet, targets):
             sock.sendto(packet, target)
     finally:
         sock.close()
+
+
+def _open_host_listener():
+    """Raw socket to hear the host announce itself after resume, or None.
+
+    Needs root (the Decky backend has it) and Linux AF_PACKET; returns None
+    anywhere that's unavailable so wake falls back to blind bursts.
+    """
+    try:
+        sock = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(ETH_P_ALL))
+        sock.setblocking(False)
+        return sock
+    except (AttributeError, OSError):
+        return None
+
+
+async def _heard_host(sock, mac_bytes, deadline):
+    """True if a broadcast/multicast frame sourced from mac_bytes arrives.
+
+    A Windows box resuming from S3 announces itself (gratuitous ARP, DHCP,
+    NetBIOS) — all broadcast, which crosses client-isolating routers. Unicast
+    from the host is deliberately NOT counted: NICs with ARP offload answer
+    ARP unicast while still asleep, which would be a false "awake".
+    """
+    drained = 0
+    while time.monotonic() < deadline:
+        try:
+            frame = sock.recv(2048)
+        except (BlockingIOError, InterruptedError):
+            await asyncio.sleep(0.05)
+            continue
+        except OSError:
+            return False
+        if len(frame) >= 12 and frame[6:12] == mac_bytes and frame[0] & 1:
+            return True
+        drained += 1
+        if drained % 50 == 0:
+            await asyncio.sleep(0)  # don't starve the event loop on busy LANs
+    return False
 
 
 class Plugin:
@@ -166,10 +213,11 @@ class Plugin:
 
     async def wake_host(self):
         try:
-            packet = _magic_packet(_parse_mac(self.settings["mac"]))
+            mac_bytes = _parse_mac(self.settings["mac"])
         except ValueError as e:
             self._dbg(f"wake ERROR: {e}")
             return {"ok": False, "error": str(e)}
+        packet = _magic_packet(mac_bytes)
 
         port = int(self.settings["wol_port"] or 9)
         # WOL magic packets are port-agnostic (the NIC scans the payload), so hit
@@ -179,10 +227,44 @@ class Plugin:
         if host:
             targets.append((host, port))
 
+        listener = _open_host_listener()
+        if listener is None:
+            return await self._wake_blind(packet, targets)
+
+        started = time.monotonic()
+        deadline = started + WAKE_WINDOW_S
+        attempts = send_errors = 0
+        confirmed = False
         try:
-            # 8 packets over ~5s: delivery to a sleeping wired NIC across a
-            # client-isolating router is flaky, and a short burst can miss
-            # entirely. Extra WOL packets are harmless to an awake host.
+            while not confirmed and time.monotonic() < deadline:
+                attempts += 1
+                try:
+                    _send_udp(packet, targets)
+                except OSError as e:
+                    # Right after Deck resume Wi-Fi may still be reassociating;
+                    # sends fail transiently — keep the window open and retry.
+                    send_errors += 1
+                    self._dbg(f"wake: send failed (attempt {attempts}): {e}")
+                confirmed = await _heard_host(
+                    listener, mac_bytes,
+                    min(time.monotonic() + WAKE_RETRY_S, deadline))
+        finally:
+            listener.close()
+
+        elapsed = round(time.monotonic() - started, 1)
+        if confirmed:
+            self._dbg(f"wake: host confirmed awake after {elapsed}s ({attempts} attempts)")
+            return {"ok": True, "confirmed": True, "elapsed_s": elapsed, "attempts": attempts}
+        if send_errors == attempts:
+            self._dbg(f"wake ERROR: every send failed across {elapsed}s")
+            return {"ok": False, "error": "network unreachable for the whole wake window"}
+        self._dbg(f"wake: NO confirmation after {elapsed}s ({attempts} attempts, {send_errors} send errors)")
+        return {"ok": True, "confirmed": False, "elapsed_s": elapsed, "attempts": attempts}
+
+    async def _wake_blind(self, packet, targets):
+        # No raw-socket privilege (not root / not Linux): the old fire-and-forget
+        # stretched burst, honestly reported as unconfirmed.
+        try:
             for i in range(8):
                 _send_udp(packet, targets)
                 if i < 7:
@@ -190,9 +272,8 @@ class Plugin:
         except OSError as e:
             self._dbg(f"wake ERROR: send failed: {e}")
             return {"ok": False, "error": str(e)}
-
-        self._dbg(f"wake: sent WOL burst to {targets}")
-        return {"ok": True}
+        self._dbg(f"wake: sent blind burst to {targets} (no listener available)")
+        return {"ok": True, "confirmed": None}
 
     async def sleep_host(self):
         if self.settings["sleep_mode"] == "udp":
