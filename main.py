@@ -153,6 +153,17 @@ class Plugin:
 
     # ---- actions (unconditional; also used by the Test buttons) --------
 
+    def _bcast_targets(self, ports):
+        # Global broadcast, the configured broadcast, and the /24 directed
+        # broadcast derived from the host IP — different routers flood different
+        # broadcast forms, and some (client-isolating ones) only pass the directed
+        # /24 form across the wireless/wired boundary, not global 255.255.255.255.
+        bcasts = {"255.255.255.255", (self.settings["broadcast_ip"] or "255.255.255.255")}
+        host = (self.settings["host_ip"] or "").strip()
+        if host.count(".") == 3:
+            bcasts.add(host.rsplit(".", 1)[0] + ".255")
+        return [(b, p) for b in bcasts for p in ports]
+
     async def wake_host(self):
         try:
             packet = _magic_packet(_parse_mac(self.settings["mac"]))
@@ -161,7 +172,9 @@ class Plugin:
             return {"ok": False, "error": str(e)}
 
         port = int(self.settings["wol_port"] or 9)
-        targets = [(self.settings["broadcast_ip"] or "255.255.255.255", port)]
+        # WOL magic packets are port-agnostic (the NIC scans the payload), so hit
+        # 9 and 7; add the host unicast for non-isolating networks where that works.
+        targets = self._bcast_targets({port, 7})
         host = (self.settings["host_ip"] or "").strip()
         if host:
             targets.append((host, port))
@@ -219,14 +232,9 @@ class Plugin:
         # host from a wireless client. This mirrors how WOL wake already works.
         packet = _magic_packet(mac[::-1])
         port = int(self.settings["wol_port"] or 9)
-        # sol listens on UDP 9 and 7 by default. Hit the global broadcast, the
-        # configured broadcast, and the /24 directed broadcast derived from the
-        # host IP — different routers flood different broadcast forms, so cover all.
-        bcasts = {"255.255.255.255", (self.settings["broadcast_ip"] or "255.255.255.255")}
-        host = (self.settings["host_ip"] or "").strip()
-        if host.count(".") == 3:
-            bcasts.add(host.rsplit(".", 1)[0] + ".255")
-        targets = [(b, p) for b in bcasts for p in {port, 7}]
+        # sol listens on UDP 9 and 7 by default; broadcast to both across every
+        # broadcast form (see _bcast_targets).
+        targets = self._bcast_targets({port, 7})
         try:
             for i in range(3):
                 _send_udp(packet, targets)
