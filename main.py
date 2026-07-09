@@ -212,18 +212,30 @@ class Plugin:
             self._dbg(f"sleep ERROR: {e}")
             return {"ok": False, "error": str(e)}
 
-        # sleep-on-lan convention: magic packet built from the REVERSED MAC
+        # sleep-on-lan convention: magic packet built from the REVERSED MAC.
+        # Sent to the BROADCAST address (not the host's unicast IP): some routers
+        # — e.g. the ZTE MC888 5G CPE — isolate wireless from wired clients and
+        # drop unicast between them, but still flood layer-2 broadcast across, so
+        # broadcast is the only envelope that reliably reaches a wired host from a
+        # wireless Deck. This mirrors how WOL wake already works.
         packet = _magic_packet(mac[::-1])
+        port = int(self.settings["wol_port"] or 9)
+        # sol listens on UDP 9 and 7 by default. Hit the global broadcast, the
+        # configured broadcast, and the /24 directed broadcast derived from the
+        # host IP — different routers flood different broadcast forms, so cover all.
+        bcasts = {"255.255.255.255", (self.settings["broadcast_ip"] or "255.255.255.255")}
         host = (self.settings["host_ip"] or "").strip()
-        target = (host or self.settings["broadcast_ip"] or "255.255.255.255",
-                  int(self.settings["wol_port"] or 9))
+        if host.count(".") == 3:
+            bcasts.add(host.rsplit(".", 1)[0] + ".255")
+        targets = [(b, p) for b in bcasts for p in {port, 7}]
         try:
-            _send_udp(packet, [target])
-            await asyncio.sleep(0.2)
-            _send_udp(packet, [target])
+            for i in range(3):
+                _send_udp(packet, targets)
+                if i < 2:
+                    await asyncio.sleep(0.3)
         except OSError as e:
             self._dbg(f"sleep ERROR: send failed: {e}")
             return {"ok": False, "error": str(e)}
 
-        self._dbg(f"sleep: sent reversed-MAC packet to {target}")
+        self._dbg(f"sleep: sent reversed-MAC broadcast to {targets}")
         return {"ok": True}
