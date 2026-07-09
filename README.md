@@ -14,7 +14,7 @@ your session.
 | Deck event | Plugin action |
 |---|---|
 | Suspend (power button / lid / idle) | Sends a sleep command to the host **before** Wi-Fi drops |
-| Resume | Sends a burst of 3 WOL magic packets to wake the host |
+| Resume | Sends a burst of 8 WOL magic packets over ~5 s to wake the host |
 
 With **"Only when using Remote Play"** enabled (default), the suspend action only fires
 if a Remote Play session is active (detected via Steam's `streaming_client` process),
@@ -35,6 +35,17 @@ running on the host, in one of two modes (configurable in the plugin panel):
 
 1. Download [sleep-on-lan](https://github.com/SR-G/sleep-on-lan/releases) (`sol.exe`).
    Default config listens on UDP 9 (reversed-MAC) and HTTP 8009 — both work as-is.
+   Strongly recommended: create a `sol.json` next to `sol.exe` enabling
+   `AvoidDualUDPSending`, so duplicate sleep packets buffered across the suspend
+   transition can never put the PC straight back to sleep on resume
+   ([sleep-on-lan #22](https://github.com/SR-G/sleep-on-lan/issues/22)):
+
+   ```json
+   {
+     "Listeners": ["UDP:9", "HTTP:8009"],
+     "AvoidDualUDPSending": { "Active": true, "Delay": "400ms" }
+   }
+   ```
 2. Run it at boot via Task Scheduler (its README suggests NSSM, which is abandoned —
    don't bother). From an **elevated** PowerShell:
 

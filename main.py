@@ -180,11 +180,13 @@ class Plugin:
             targets.append((host, port))
 
         try:
-            # burst of 3 — WOL is fire-and-forget, redundancy is cheap
-            for i in range(3):
+            # 8 packets over ~5s: delivery to a sleeping wired NIC across a
+            # client-isolating router is flaky, and a short burst can miss
+            # entirely. Extra WOL packets are harmless to an awake host.
+            for i in range(8):
                 _send_udp(packet, targets)
-                if i < 2:
-                    await asyncio.sleep(0.3)
+                if i < 7:
+                    await asyncio.sleep(0.7)
         except OSError as e:
             self._dbg(f"wake ERROR: send failed: {e}")
             return {"ok": False, "error": str(e)}
@@ -236,10 +238,12 @@ class Plugin:
         # broadcast form (see _bcast_targets).
         targets = self._bcast_targets({port, 7})
         try:
-            for i in range(3):
-                _send_udp(packet, targets)
-                if i < 2:
-                    await asyncio.sleep(0.3)
+            # Exactly ONE send, unlike the wake burst: extra sleep packets are
+            # buffered through the suspend transition and sol replays them on
+            # resume, putting the host straight back to sleep (SR-G/sleep-on-lan
+            # #22). The host NIC is awake here, so delivery doesn't need
+            # redundancy; a lost packet just leaves the host awake.
+            _send_udp(packet, targets)
         except OSError as e:
             self._dbg(f"sleep ERROR: send failed: {e}")
             return {"ok": False, "error": str(e)}
